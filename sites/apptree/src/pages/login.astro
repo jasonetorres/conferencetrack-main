@@ -1,0 +1,106 @@
+---
+// src/pages/login.astro
+import Layout from '../layouts/Layout.astro';
+
+// --- Get Environment Variables ---
+const appwriteEndpoint = import.meta.env.PUBLIC_APPWRITE_ENDPOINT;
+const appwriteProjectId = import.meta.env.PUBLIC_APPWRITE_PROJECT_ID;
+---
+
+<Layout title="Login">
+    <div class="card">
+        <h2>Login to Your Account</h2>
+        <form id="login-form">
+            <div>
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" placeholder="you@example.com" required />
+            </div>
+            <div>
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required />
+            </div>
+            <button type="submit" id="submit-button">Login</button>
+        </form>
+        <div id="message-area" class="message" style="display: none;"></div>
+         <p class="text-center mt-4">Don't have an account? <a href="/signup">Sign up here</a>.</p>
+    </div>
+
+    <script define:vars={{ appwriteEndpoint, appwriteProjectId }}>
+        // --- 1. Import Correctly ---
+        import { Client, Account, AppwriteException } from 'appwrite';
+
+        // --- 2. Initialize Appwrite ---
+        const client = new Client()
+            .setEndpoint(appwriteEndpoint)
+            .setProject(appwriteProjectId);
+
+        const account = new Account(client);
+        // --- End Initialization ---
+
+
+        const form = document.getElementById('login-form') as HTMLFormElement | null;
+        const emailInput = document.getElementById('email') as HTMLInputElement | null;
+        const passwordInput = document.getElementById('password') as HTMLInputElement | null;
+        const submitButton = document.getElementById('submit-button') as HTMLButtonElement | null;
+        const messageArea = document.getElementById('message-area') as HTMLDivElement | null;
+
+        function showMessage(text: string, type: 'error' | 'success' = 'error') {
+            if (messageArea) {
+                messageArea.textContent = text;
+                messageArea.className = `message ${type}`;
+                messageArea.style.display = 'block';
+            }
+        }
+
+         // --- 3. Check Config ---
+        if (!appwriteEndpoint || !appwriteProjectId) {
+            console.error("Appwrite configuration missing. Check .env and define:vars.");
+            if (messageArea) showMessage("Configuration error. Cannot process login.");
+        }
+
+        if (form && emailInput && passwordInput && submitButton && messageArea && appwriteEndpoint) {
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                submitButton.disabled = true;
+                submitButton.textContent = 'Logging in...';
+                showMessage('', 'error');
+
+                const email = emailInput.value.trim();
+                const password = passwordInput.value;
+
+                try {
+                    console.log(`Attempting login for ${email}...`);
+                    // --- 4. Use Initialized 'account' ---
+                    await account.createEmailPasswordSession(email, password);
+                    console.log("Login successful! Redirecting...");
+                    window.location.href = '/dashboard';
+
+                } catch (error: unknown) { // Use unknown for better type safety
+                    console.error("Login failed:", error);
+                    let msg = "Login failed. Please check your credentials.";
+
+                    // --- 5. Improved Error Handling ---
+                    if (error instanceof AppwriteException) {
+                        if (error.message.toLowerCase().includes('verified')) {
+                             msg = "Login failed. Please ensure your email is verified.";
+                        } else if (error.message.toLowerCase().includes('invalid credentials')) {
+                            msg = "Login failed. Incorrect email or password.";
+                        } else {
+                            msg = `Login failed: ${error.message}`;
+                        }
+                    } else if (error instanceof Error) {
+                         msg = `Login failed: ${error.message}`;
+                    }
+
+                    showMessage(msg);
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'Login';
+                }
+            });
+        } else {
+             console.error("One or more login form elements were not found or Appwrite not configured!");
+             if (messageArea) showMessage("Page Error: Could not find form elements or config.");
+        }
+    </script>
+</Layout>
