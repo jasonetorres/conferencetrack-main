@@ -111,8 +111,6 @@ export const authService = {
 
 	async logout(): Promise<void> {
 		try {
-			// Clear any localStorage cached profile data before logging out
-			// This helps prevent stale data from persisting between sessions
 			if (typeof window !== 'undefined') {
 				// Get user ID before logout to clear user-specific cached data
 				const currentUser = await this.getCurrentUser()
@@ -121,7 +119,7 @@ export const authService = {
 					localStorage.removeItem(userProfileKey)
 				}
 
-				// Remove any generic profile data
+
 				localStorage.removeItem('profile')
 			}
 

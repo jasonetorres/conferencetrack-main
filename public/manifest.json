@@ -1,6 +1,6 @@
 {
   "name": "Conference Contact Tracker",
-  "short_name": "Contacts",
+  "short_name": "Conftrack",
   "description": "Track and manage your conference contacts with QR codes",
   "start_url": "/",
   "display": "standalone",
