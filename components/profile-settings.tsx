@@ -2,7 +2,7 @@
 
 import type React from 'react'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,11 +24,38 @@ export default function ProfileSettings() {
 	const { toast } = useToast()
 	const [isUploadingImage, setIsUploadingImage] = useState(false)
 	const [isDeletingImage, setIsDeletingImage] = useState(false)
+
+	// Local form state to prevent interference with profile updates
+	const [formData, setFormData] = useState({
+		name: '',
+		title: '',
+		company: '',
+		email: '',
+		phone: '',
+	})
+
 	const [socialInputs, setSocialInputs] = useState<
 		Array<{ platform: string; url: string }>
 	>([])
 	const isInitializedRef = useRef(false)
 	const fileInputRef = useRef<HTMLInputElement>(null)
+
+	// Initialize form data when profile loads
+	useEffect(() => {
+		setFormData({
+			name: profile.name || '',
+			title: profile.title || '',
+			company: profile.company || '',
+			email: profile.email || '',
+			phone: profile.phone || '',
+		})
+	}, [
+		profile.name,
+		profile.title,
+		profile.company,
+		profile.email,
+		profile.phone,
+	])
 
 	// Initialize social inputs when the profile loads
 	useEffect(() => {
@@ -67,9 +94,33 @@ export default function ProfileSettings() {
 		}
 	}, [profile.profilePictureId, profile.profilePicture, refreshProfilePicture])
 
+	// Debounced update function
+	const debouncedUpdate = useCallback(
+		(() => {
+			let timeoutId: NodeJS.Timeout
+			return (data: Partial<typeof formData>) => {
+				clearTimeout(timeoutId)
+				timeoutId = setTimeout(() => {
+					updateProfile(data)
+				}, 500) // 500ms delay
+			}
+		})(),
+		[updateProfile]
+	)
+
 	const handleProfileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
 		const { name, value } = e.target
-		updateProfile({ ...profile, [name]: value })
+		const newFormData = { ...formData, [name]: value }
+		setFormData(newFormData)
+
+		// Debounced update to profile
+		debouncedUpdate(newFormData)
+	}
+
+	// Handle blur events for immediate updates when user finishes editing
+	const handleProfileBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+		const { name, value } = e.target
+		updateProfile({ [name]: value })
 	}
 
 	const handleSocialChange = (
@@ -297,8 +348,9 @@ export default function ProfileSettings() {
 									<Input
 										id='name'
 										name='name'
-										value={profile.name || ''}
+										value={formData.name}
 										onChange={handleProfileChange}
+										onBlur={handleProfileBlur}
 										placeholder='Your Name'
 									/>
 								</div>
@@ -308,8 +360,9 @@ export default function ProfileSettings() {
 									<Input
 										id='title'
 										name='title'
-										value={profile.title || ''}
+										value={formData.title}
 										onChange={handleProfileChange}
+										onBlur={handleProfileBlur}
 										placeholder='Software Engineer'
 									/>
 								</div>
@@ -319,8 +372,9 @@ export default function ProfileSettings() {
 									<Input
 										id='company'
 										name='company'
-										value={profile.company || ''}
+										value={formData.company}
 										onChange={handleProfileChange}
+										onBlur={handleProfileBlur}
 										placeholder='Acme Inc.'
 									/>
 								</div>
@@ -334,8 +388,9 @@ export default function ProfileSettings() {
 										id='email'
 										name='email'
 										type='email'
-										value={profile.email || ''}
+										value={formData.email}
 										onChange={handleProfileChange}
+										onBlur={handleProfileBlur}
 										placeholder='you@example.com'
 									/>
 								</div>
@@ -345,8 +400,9 @@ export default function ProfileSettings() {
 									<Input
 										id='phone'
 										name='phone'
-										value={profile.phone || ''}
+										value={formData.phone}
 										onChange={handleProfileChange}
+										onBlur={handleProfileBlur}
 										placeholder='+1 (555) 123-4567'
 									/>
 								</div>
