@@ -12,7 +12,7 @@ import {
 
 const endpoint = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT
 const projectId = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID
-const devKey = process.env.NEXT_PUBLIC_APPWRITE_DEV_KEY // Keep this line for local dev only if you re-enable the dev key method
+const devKey = process.env.NEXT_PUBLIC_APPWRITE_DEV_KEY 
 
 if (!endpoint || !projectId) {
 	console.error(
@@ -28,14 +28,13 @@ let client: Client
 // Initialize the client
 client = new Client().setEndpoint(endpoint).setProject(projectId)
 
-// Create and export direct SDK service instances
 export const accountInstance = new Account(client)
 export const databasesInstance = new Databases(client)
 export const storageInstance = new Storage(client)
 export const teamsInstance = new Teams(client)
 export { ID, Query }
 
-// Define database and collection IDs - ENSURE THESE PULL FROM ENV VARS NOW
+
 export const APPWRITE_DATABASE_ID =
 	process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID || 'main_db'
 export const PROFILES_COLLECTION_ID =
@@ -45,7 +44,7 @@ export const CONTACTS_COLLECTION_ID =
 export const QR_SETTINGS_COLLECTION_ID =
 	process.env.NEXT_PUBLIC_QR_SETTINGS_COLLECTION_ID || 'qr_settings'
 
-// Ensure these constants also pull from new env variables or match exactly from console
+
 export const SPEAKERS_COLLECTION_ID =
 	process.env.NEXT_PUBLIC_SPEAKERS_COLLECTION_ID || 'speakers'
 export const SESSIONS_COLLECTION_ID =
@@ -55,7 +54,6 @@ export const ATTENDEES_COLLECTION_ID =
 export const CONFERENCES_COLLECTION_ID =
 	process.env.NEXT_PUBLIC_CONFERENCES_COLLECTION_ID || 'conferences'
 
-// NEW COLLECTIONS BASED ON YOUR LIST - Make sure you actually use these in your app!
 export const SPEAKER_DETAILS_COLLECTION_ID =
 	process.env.NEXT_PUBLIC_SPEAKER_DETAILS_COLLECTION_ID || 'speaker_details'
 export const CONTACT_DETAILS_COLLECTION_ID =

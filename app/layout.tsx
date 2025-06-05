@@ -9,7 +9,6 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "Conference Contact Tracker",
   description: "Track and manage your conference contacts with QR codes",
-    generator: 'v0.dev'
 }
 
 export default function RootLayout({
