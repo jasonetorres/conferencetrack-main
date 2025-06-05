@@ -11,31 +11,52 @@ import {
 import { useAuth } from '@/hooks/use-auth'
 import {
 	databaseService as databases,
+	storageService,
 	PROFILES_COLLECTION_ID,
+	PROFILE_IMAGES_BUCKET_ID,
 } from '@/lib/appwrite'
-import { Permission, Role, Models, AppwriteException } from 'appwrite'
+import {
+	Permission,
+	Role,
+	Models,
+	AppwriteException,
+	type ImageFormat,
+} from 'appwrite'
 import type { Profile as LocalProfileType } from '@/types/profile'
 
-// Extend LocalProfileType with Appwrite-specific document properties and attributes
+// Extend LocalProfileType with Appwrite-specific document properties
 export interface AppwriteProfile extends LocalProfileType, Models.Document {
 	userId: string // Ensure this attribute exists in your Appwrite 'profiles' collection
+	profilePictureId?: string // ID of the uploaded image in Appwrite storage
 }
 
 type ProfileContextType = {
 	profile: LocalProfileType
 	updateProfile: (profileData: Partial<LocalProfileType>) => Promise<void>
+	/**
+	 * Upload a profile picture to Appwrite storage.
+	 * Note: This function does not delete any previous profile pictures.
+	 * The component using this function should handle deletion of previous images.
+	 */
+	uploadProfilePicture: (file: File) => Promise<string | null>
+	/**
+	 * Force refresh the profile picture URL.
+	 * Useful after login or when the image doesn't load properly.
+	 */
+	refreshProfilePicture: () => Promise<void>
 	isLoading: boolean
 	error: string | null
 }
 
 const defaultProfile: LocalProfileType = {
 	name: 'New User', // Required field with default
-	title: '',        // Optional field
+	title: '', // Optional field
 	company: 'Unknown', // Required field with default
-	email: '',        // Required field (will be populated from user)
-	phone: '',        // Optional field
-	socials: {},      // Optional field (stored as JSON string)
-	profilePicture: undefined, // Local field, not in Appwrite schema
+	email: '', // Required field (will be populated from user)
+	phone: '', // Optional field
+	socials: {}, // Optional field (stored as JSON string)
+	profilePictureId: undefined, // ID of the image in Appwrite storage
+	profilePicture: undefined, // Local field for UI display
 }
 
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined)
@@ -49,6 +70,63 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 	const [error, setError] = useState<string | null>(null)
 
 	const appwriteUserId = user?.$id
+
+	// Helper function to generate a profile picture URL from a file ID
+	const generateProfilePictureUrl = async (
+		profilePictureId: string
+	): Promise<string | undefined> => {
+		if (!profilePictureId) {
+			return undefined
+		}
+
+		try {
+			// Verify the file exists
+			const fileExists = await storageService.getFile(
+				PROFILE_IMAGES_BUCKET_ID,
+				profilePictureId,
+				true // Suppress not found errors
+			)
+
+			if (fileExists) {
+				// Generate a fresh URL with timestamp to bypass caching
+				const timestamp = new Date().getTime()
+				const previewUrl = storageService.getFilePreview(
+					PROFILE_IMAGES_BUCKET_ID,
+					profilePictureId,
+					400, // width
+					400, // height
+					'center', // gravity
+					100, // quality
+					0, // borderWidth
+					'ffffff', // borderColor (without # prefix)
+					0, // borderRadius
+					1, // opacity
+					0, // rotation
+					'ffffff', // background (without # prefix)
+					'webp' as ImageFormat // output format
+				)
+
+				if (previewUrl) {
+					// Create the URL with cache-busting parameter
+					const urlWithTimestamp = `${previewUrl}${
+						previewUrl.includes('?') ? '&' : '?'
+					}_t=${timestamp}`
+
+					// Update the profile state with the new URL
+					setProfile((prevProfile) => ({
+						...prevProfile,
+						profilePicture: urlWithTimestamp,
+					}))
+
+					return urlWithTimestamp
+				}
+			}
+			return undefined
+		} catch (error) {
+			console.error('Failed to generate profile picture URL:', error)
+			return undefined
+		}
+	}
 
 	const loadProfile = useCallback(async () => {
 		if (!appwriteUserId) {
@@ -76,16 +154,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		setError(null)
 
 		const savedProfileKey = `profile_${appwriteUserId}`
-		const savedProfile = localStorage.getItem(savedProfileKey)
-		if (savedProfile) {
-			try {
-				const parsed = JSON.parse(savedProfile) as LocalProfileType
-				setProfile(parsed)
-			} catch (e) {
-				console.error('Failed to parse profile from localStorage', e)
-				localStorage.removeItem(savedProfileKey)
-			}
-		}
+		// Don't set profile state from localStorage to avoid the flash
+		// We'll load everything fresh from the database and set state only once
 
 		try {
 			// Fetch document using the PROFILES_COLLECTION_ID from env
@@ -103,10 +173,80 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 					typeof appwriteDoc.socials === 'string'
 						? JSON.parse(appwriteDoc.socials)
 						: appwriteDoc.socials || {},
-				profilePicture: undefined, // This field doesn't exist in your schema
+				profilePictureId: appwriteDoc.profilePictureId,
+				profilePicture: undefined, // Will be set below if picture exists
 			}
+
+			// If profile has a picture ID, validate it and get the preview URL BEFORE setting state
+			if (
+				appwriteDoc.profilePictureId &&
+				appwriteDoc.profilePictureId.length > 8
+			) {
+				try {
+					// First verify if the file actually exists
+					const fileExists = await storageService.getFile(
+						PROFILE_IMAGES_BUCKET_ID,
+						appwriteDoc.profilePictureId,
+						true // Suppress not found errors
+					)
+
+					if (fileExists) {
+						// Always generate a fresh URL with a cache-busting timestamp to force reload after login
+						const timestamp = new Date().getTime()
+
+						// Get a preview URL for the profile picture using Appwrite storage
+						const previewUrl = storageService.getFilePreview(
+							PROFILE_IMAGES_BUCKET_ID,
+							appwriteDoc.profilePictureId,
+							400, // width
+							400, // height
+							'center', // gravity
+							100, // quality
+							0, // borderWidth
+							'ffffff', // borderColor (without # prefix)
+							0, // borderRadius
+							1, // opacity
+							0, // rotation
+							'ffffff', // background (without # prefix)
+							'webp' as ImageFormat // output format
+						)
+
+						if (previewUrl) {
+							// Set the image URL BEFORE setting profile state
+							loadedProfile.profilePicture = `${previewUrl}${
+								previewUrl.includes('?') ? '&' : '?'
+							}_t=${timestamp}`
+						}
+					} else {
+						// If the file doesn't exist but the ID is in the profile, clear the ID
+						console.log('Profile has an invalid profilePictureId, clearing it')
+						loadedProfile.profilePictureId = undefined
+
+						// Update the profile document to remove the invalid reference
+						// Set explicitly to null to ensure it's cleared in the database
+						await databases.updateDocument(
+							PROFILES_COLLECTION_ID,
+							appwriteUserId,
+							{ profilePictureId: null }
+						)
+					}
+				} catch (error) {
+					console.error('Error verifying profile picture:', error)
+					// Don't block profile loading due to picture issues
+				}
+			}
+
+			// Before storing in localStorage, create a copy that doesn't include the full image URL
+			// This prevents storing stale image URLs that might cause issues after login/logout
+			const profileForStorage = {
+				...loadedProfile,
+				// Only store the ID, not the URL which can change or expire
+				profilePicture: undefined,
+			}
+
+			// Set the profile state ONCE with the complete data including the image URL
 			setProfile(loadedProfile)
-			localStorage.setItem(savedProfileKey, JSON.stringify(loadedProfile))
+			localStorage.setItem(savedProfileKey, JSON.stringify(profileForStorage))
 		} catch (e: any) {
 			const appwriteError = e as AppwriteException
 			// Check for 'collection_not_found' as well
@@ -139,6 +279,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 						phone: initialProfile.phone, // Optional
 						socials: JSON.stringify(initialProfile.socials || {}), // Optional
 						userId: appwriteUserId, // Required
+						profilePictureId: initialProfile.profilePictureId, // Optional
 					}
 
 					await databases.createDocumentWithId<AppwriteProfile>(
@@ -171,6 +312,81 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		loadProfile()
 	}, [loadProfile])
+
+	const uploadProfilePicture = async (file: File): Promise<string | null> => {
+		if (!appwriteUserId) {
+			setError('User not authenticated. Cannot upload profile picture.')
+			return null
+		}
+
+		// Validate file type
+		const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+		if (!allowedTypes.includes(file.type)) {
+			console.error(
+				`Invalid file type: ${file.type}. Allowed types: ${allowedTypes.join(
+					', '
+				)}`
+			)
+			setError(
+				`Invalid file type. Allowed types: ${allowedTypes
+					.map((t) => t.replace('image/', ''))
+					.join(', ')}`
+			)
+			return null
+		}
+
+		// Validate file size (5MB limit)
+		const maxSize = 5 * 1024 * 1024 // 5MB
+		if (file.size > maxSize) {
+			console.error(
+				`File too large: ${(file.size / (1024 * 1024)).toFixed(
+					2
+				)}MB. Max size: 5MB`
+			)
+			setError('Profile picture must be less than 5MB')
+			return null
+		}
+
+		try {
+			// Upload the file to Appwrite storage with permissions
+			const uploadedFile = await storageService.uploadFile(
+				PROFILE_IMAGES_BUCKET_ID,
+				file,
+				[
+					Permission.read(Role.user(appwriteUserId)),
+					Permission.update(Role.user(appwriteUserId)),
+					Permission.delete(Role.user(appwriteUserId)),
+				]
+			)
+
+			// Verify the upload was successful by checking if we can get the file
+			try {
+				await storageService.getFile(PROFILE_IMAGES_BUCKET_ID, uploadedFile.$id)
+			} catch (verifyError) {
+				console.error('Failed to verify uploaded file:', verifyError)
+				// Still continue since we have the file ID from the upload
+			}
+
+			// Return the file ID for storing in the profile document
+			return uploadedFile.$id
+		} catch (error: any) {
+			console.error('Appwrite: Failed to upload profile picture', error)
+
+			// Provide more specific error messages based on the error type
+			if (error.code === 401) {
+				setError('Authentication error. Please sign in again.')
+			} else if (error.code === 413) {
+				setError('File is too large. Maximum size is 5MB.')
+			} else {
+				setError(
+					`Failed to upload profile picture: ${
+						error.message || 'Unknown error'
+					}`
+				)
+			}
+			return null
+		}
+	}
 
 	const updateProfile = async (newProfileData: Partial<LocalProfileType>) => {
 		if (!appwriteUserId) {
@@ -206,12 +422,19 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		// Ensure required fields match exactly what's in your database schema
 		const payload: Omit<AppwriteProfile, keyof Models.Document> = {
 			name: currentFullProfile.name || user?.name || 'New User', // Required
-			company: currentFullProfile.company || 'Unknown', // Required 
+			company: currentFullProfile.company || 'Unknown', // Required
 			email: currentFullProfile.email || user?.email || '', // Required
 			title: currentFullProfile.title, // Optional
 			phone: currentFullProfile.phone, // Optional
 			socials: JSON.stringify(currentFullProfile.socials || {}), // Optional
 			userId: appwriteUserId, // Required
+			// Special handling for profilePictureId to ensure null is properly persisted
+			profilePictureId:
+				currentFullProfile.profilePictureId === null ||
+				currentFullProfile.profilePictureId === undefined ||
+				currentFullProfile.profilePictureId === ''
+					? null
+					: currentFullProfile.profilePictureId,
 		}
 
 		const savedProfileKey = `profile_${appwriteUserId}`
@@ -233,10 +456,27 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 					typeof updatedDoc.socials === 'string'
 						? JSON.parse(updatedDoc.socials)
 						: updatedDoc.socials || {},
-				profilePicture: undefined, // This field doesn't exist in your schema
+				profilePictureId: updatedDoc.profilePictureId,
+				profilePicture: currentFullProfile.profilePicture, // Keep the existing preview URL
 			}
+
+			// For localStorage, don't store the actual image URL which might expire or change
+			const profileForStorage = {
+				...newProfileState,
+				profilePicture: undefined,
+			}
+
 			setProfile(newProfileState)
-			localStorage.setItem(savedProfileKey, JSON.stringify(newProfileState))
+			localStorage.setItem(savedProfileKey, JSON.stringify(profileForStorage))
+
+			// If profilePictureId was updated and exists, generate the profile picture URL
+			if (
+				updatedDoc.profilePictureId &&
+				updatedDoc.profilePictureId !== profile.profilePictureId
+			) {
+				console.log('Profile picture ID updated, generating URL...')
+				await generateProfilePictureUrl(updatedDoc.profilePictureId)
+			}
 		} catch (e: any) {
 			const appwriteError = e as AppwriteException
 			// Handle document not found (404) or other not found errors
@@ -272,10 +512,27 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 							typeof createdDoc.socials === 'string'
 								? JSON.parse(createdDoc.socials)
 								: createdDoc.socials || {},
-						profilePicture: undefined, // This field doesn't exist in your schema
+						profilePictureId: createdDoc.profilePictureId,
+						profilePicture: currentFullProfile.profilePicture, // Keep the existing preview URL
 					}
+
+					// For localStorage, don't store the actual image URL which might expire or change
+					const profileForStorage = {
+						...newProfileState,
+						profilePicture: undefined,
+					}
+
 					setProfile(newProfileState)
-					localStorage.setItem(savedProfileKey, JSON.stringify(newProfileState))
+					localStorage.setItem(
+						savedProfileKey,
+						JSON.stringify(profileForStorage)
+					)
+
+					// If profilePictureId was created and exists, generate the profile picture URL
+					if (createdDoc.profilePictureId) {
+						console.log('Profile picture ID created, generating URL...')
+						await generateProfilePictureUrl(createdDoc.profilePictureId)
+					}
 				} catch (createError: any) {
 					console.error('Appwrite: Failed to create profile', createError)
 					// Check for specific attribute validation errors here if needed
@@ -290,9 +547,119 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		}
 	}
 
+	// Function to refresh the profile picture URL (useful after login or when image doesn't load)
+	const refreshProfilePicture = useCallback(async () => {
+		if (!appwriteUserId) {
+			return
+		}
+
+		console.log('Refreshing profile picture...')
+
+		// Always get the latest profilePictureId from the database to avoid stale state
+		let profilePicId: string | undefined
+
+		try {
+			// Fetch the latest profile from the database
+			const dbProfile = await databases.getDocument<AppwriteProfile>(
+				PROFILES_COLLECTION_ID,
+				appwriteUserId
+			)
+
+			profilePicId = dbProfile.profilePictureId || undefined
+			console.log('ProfilePictureId from database:', profilePicId)
+		} catch (error) {
+			console.error(
+				'Error fetching profile from database during refresh:',
+				error
+			)
+			return
+		}
+
+		if (!profilePicId) {
+			console.log('No profile picture ID found, clearing profile picture')
+			setProfile((prevProfile) => ({
+				...prevProfile,
+				profilePictureId: undefined,
+				profilePicture: undefined,
+			}))
+			return
+		}
+
+		try {
+			// Verify the file exists
+			const fileExists = await storageService.getFile(
+				PROFILE_IMAGES_BUCKET_ID,
+				profilePicId,
+				true // Suppress not found errors
+			)
+
+			if (fileExists) {
+				console.log('Profile picture file found, generating URL')
+				// Generate a fresh URL with timestamp to bypass caching
+				const timestamp = new Date().getTime()
+				const previewUrl = storageService.getFilePreview(
+					PROFILE_IMAGES_BUCKET_ID,
+					profilePicId,
+					400,
+					400,
+					'center',
+					100,
+					0,
+					'ffffff',
+					0,
+					1,
+					0,
+					'ffffff',
+					'webp' as ImageFormat
+				)
+
+				if (previewUrl) {
+					// Update the profile with the fresh URL
+					const newUrl = `${previewUrl}${
+						previewUrl.includes('?') ? '&' : '?'
+					}_t=${timestamp}`
+					console.log(
+						'Setting new profile picture URL with timestamp:',
+						timestamp
+					)
+
+					setProfile((prevProfile) => ({
+						...prevProfile,
+						profilePictureId: profilePicId, // Ensure this is set correctly
+						profilePicture: newUrl,
+					}))
+				}
+			} else if (profilePicId) {
+				// If file doesn't exist but we have an ID, clear it
+				console.log('Profile picture not found in storage, clearing reference')
+
+				// Update local state
+				setProfile((prevProfile) => ({
+					...prevProfile,
+					profilePictureId: undefined,
+					profilePicture: undefined,
+				}))
+
+				// Update the database
+				await databases.updateDocument(PROFILES_COLLECTION_ID, appwriteUserId, {
+					profilePictureId: null,
+				})
+			}
+		} catch (error) {
+			console.error('Failed to refresh profile picture:', error)
+		}
+	}, [appwriteUserId]) // Removed profile.profilePictureId dependency to avoid stale closures
+
 	return (
 		<ProfileContext.Provider
-			value={{ profile, updateProfile, isLoading, error }}
+			value={{
+				profile,
+				updateProfile,
+				uploadProfilePicture,
+				isLoading,
+				error,
+				refreshProfilePicture,
+			}}
 		>
 			{children}
 		</ProfileContext.Provider>
