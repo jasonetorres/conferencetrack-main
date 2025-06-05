@@ -1,7 +1,7 @@
 'use client'
 
 import type React from 'react'
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import QRCode from 'react-qr-code'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -39,7 +39,8 @@ import { toast } from 'sonner'
 
 export default function QrCodeGenerator() {
 	const router = useRouter()
-	const { profile, updateProfile, uploadProfilePicture } = useProfile()
+	const { profile, updateProfile, uploadProfilePicture, isLoading } =
+		useProfile()
 	const { qrSettings, updateQrSettings } = useQrSettings()
 	const [showSettings, setShowSettings] = useState(false)
 	const [isGenerating, setIsGenerating] = useState(false)
@@ -47,8 +48,8 @@ export default function QrCodeGenerator() {
 	const fileInputRef = useRef<HTMLInputElement>(null)
 	const qrContainerRef = useRef<HTMLDivElement>(null)
 
-	// Helper function to get profile picture URL - eliminates flashing by generating URL on-demand
-	const getProfilePictureUrl = () => {
+	// Memoized profile picture URL to prevent unnecessary regenerations
+	const profilePictureUrl = useMemo(() => {
 		// First try to use the cached URL if available
 		if (profile.profilePicture) {
 			return profile.profilePicture
@@ -82,18 +83,10 @@ export default function QrCodeGenerator() {
 		}
 
 		return null
-	}
+	}, [profile.profilePicture, profile.profilePictureId]) // Only regenerate when these specific values change
 
-	const profilePictureUrl = getProfilePictureUrl()
-
-	console.log('Profile state:', {
-		profilePictureId: profile.profilePictureId,
-		profilePicture: profile.profilePicture,
-		generatedUrl: profilePictureUrl,
-	})
-
-	// Generate QR code data using vCard format
-	const generateQrData = () => {
+	// Memoized QR data generation to prevent unnecessary recalculations
+	const qrData = useMemo(() => {
 		let vcard = 'BEGIN:VCARD\n'
 		vcard += 'VERSION:3.0\n'
 
@@ -130,9 +123,29 @@ export default function QrCodeGenerator() {
 		vcard += 'END:VCARD'
 
 		return vcard
-	}
+	}, [
+		profile.name,
+		profile.title,
+		profile.company,
+		profile.email,
+		profile.phone,
+		profile.socials,
+	])
 
-	const qrData = generateQrData()
+	// Early return with loading state to prevent unnecessary renders of profile-dependent content
+	if (isLoading) {
+		return (
+			<div
+				className='min-h-screen transition-colors duration-300 -mx-4 -my-6 px-4 py-6 flex items-center justify-center'
+				style={{ backgroundColor: qrSettings.pageBackgroundColor }}
+			>
+				<div className='text-center'>
+					<div className='w-16 h-16 animate-pulse bg-muted rounded-full mx-auto mb-4' />
+					<p style={{ color: qrSettings.textColor }}>Loading profile...</p>
+				</div>
+			</div>
+		)
+	}
 
 	const handleProfilePictureUpload = async (
 		event: React.ChangeEvent<HTMLInputElement>
@@ -661,7 +674,9 @@ export default function QrCodeGenerator() {
 													</Label>
 													<div className='flex items-center gap-2'>
 														<div className='relative w-10 h-10 rounded-full overflow-hidden flex-shrink-0'>
-															{profilePictureUrl ? (
+															{isLoading ? (
+																<div className='w-full h-full animate-pulse bg-muted' />
+															) : profilePictureUrl ? (
 																<Image
 																	src={profilePictureUrl}
 																	alt='Profile'
@@ -680,11 +695,13 @@ export default function QrCodeGenerator() {
 																size='sm'
 																onClick={() => fileInputRef.current?.click()}
 																className='text-xs h-7 flex-1'
-																disabled={isUploadingImage}
+																disabled={isUploadingImage || isLoading}
 															>
 																<Camera className='h-3 w-3 mr-1' />
 																{isUploadingImage
 																	? 'Uploading...'
+																	: isLoading
+																	? 'Loading...'
 																	: profilePictureUrl
 																	? 'Change'
 																	: 'Add'}
@@ -695,7 +712,9 @@ export default function QrCodeGenerator() {
 																onClick={removeProfilePicture}
 																className='text-xs h-7'
 																disabled={
-																	isUploadingImage || !profilePictureUrl
+																	isUploadingImage ||
+																	!profilePictureUrl ||
+																	isLoading
 																}
 																style={{
 																	opacity: profilePictureUrl ? 1 : 0.3,
@@ -863,7 +882,9 @@ export default function QrCodeGenerator() {
 													borderRadius: `${qrSettings.borderRadius}px`,
 												}}
 											>
-												{profilePictureUrl ? (
+												{isLoading ? (
+													<div className='w-full h-full animate-pulse bg-muted rounded-full' />
+												) : profilePictureUrl ? (
 													<Image
 														src={profilePictureUrl}
 														alt='Profile'
@@ -1012,7 +1033,9 @@ export default function QrCodeGenerator() {
 												borderRadius: '50%',
 											}}
 										>
-											{profilePictureUrl ? (
+											{isLoading ? (
+												<div className='w-full h-full animate-pulse bg-muted rounded-full' />
+											) : profilePictureUrl ? (
 												<Image
 													src={profilePictureUrl}
 													alt='Profile'

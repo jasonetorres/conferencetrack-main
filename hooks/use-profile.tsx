@@ -7,6 +7,7 @@ import {
 	useContext,
 	type ReactNode,
 	useCallback,
+	useRef,
 } from 'react'
 import { useAuth } from '@/hooks/use-auth'
 import {
@@ -69,6 +70,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 	const [isLoading, setIsLoading] = useState(true)
 	const [error, setError] = useState<string | null>(null)
 
+	// Track if we're currently loading to prevent duplicate requests
+	const loadingRef = useRef(false)
+	const mountedRef = useRef(true)
+
 	const appwriteUserId = user?.$id
 
 	// Helper function to generate a profile picture URL from a file ID
@@ -129,6 +134,12 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 	}
 
 	const loadProfile = useCallback(async () => {
+		// Prevent duplicate loading requests
+		if (loadingRef.current) {
+			console.log('LoadProfile already in progress, skipping...')
+			return
+		}
+
 		if (!appwriteUserId) {
 			setProfile(defaultProfile)
 			setIsLoading(false)
@@ -150,6 +161,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 			return
 		}
 
+		loadingRef.current = true
 		setIsLoading(true)
 		setError(null)
 
@@ -272,9 +284,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 				try {
 					// Ensure required fields have values according to DB schema
 					const payload: Omit<AppwriteProfile, keyof Models.Document> = {
-						name: initialProfile.name || user?.name || 'New User', // Required
-						company: initialProfile.company || 'Unknown', // Required
-						email: initialProfile.email || user?.email || '', // Required
+						name: initialProfile.name ?? user?.name ?? 'New User', // Required
+						company: initialProfile.company ?? 'Unknown', // Required - only fallback if null/undefined
+						email: initialProfile.email ?? user?.email ?? '', // Required
 						title: initialProfile.title, // Optional
 						phone: initialProfile.phone, // Optional
 						socials: JSON.stringify(initialProfile.socials || {}), // Optional
@@ -306,11 +318,18 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 			}
 		} finally {
 			setIsLoading(false)
+			loadingRef.current = false
 		}
-	}, [appwriteUserId, user?.name, user?.email]) // Dependencies for useCallback
+	}, [appwriteUserId]) // Only depend on user ID to prevent multiple re-renders
 
 	useEffect(() => {
+		mountedRef.current = true
 		loadProfile()
+
+		return () => {
+			mountedRef.current = false
+			loadingRef.current = false
+		}
 	}, [loadProfile])
 
 	const uploadProfilePicture = async (file: File): Promise<string | null> => {
@@ -421,9 +440,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		// The Omit type should now exclude '$id' and other Appwrite specific document fields
 		// Ensure required fields match exactly what's in your database schema
 		const payload: Omit<AppwriteProfile, keyof Models.Document> = {
-			name: currentFullProfile.name || user?.name || 'New User', // Required
-			company: currentFullProfile.company || 'Unknown', // Required
-			email: currentFullProfile.email || user?.email || '', // Required
+			name: currentFullProfile.name ?? user?.name ?? 'New User', // Required
+			company: currentFullProfile.company ?? 'Unknown', // Required - only fallback if null/undefined
+			email: currentFullProfile.email ?? user?.email ?? '', // Required
 			title: currentFullProfile.title, // Optional
 			phone: currentFullProfile.phone, // Optional
 			socials: JSON.stringify(currentFullProfile.socials || {}), // Optional
