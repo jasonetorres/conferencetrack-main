@@ -25,29 +25,8 @@ if (!endpoint || !projectId) {
 
 let client: Client
 
-// Initialize the client first without the devKey
+// Initialize the client
 client = new Client().setEndpoint(endpoint).setProject(projectId)
-
-// Apply the devKey ONLY if in a browser environment (client-side)
-// Re-added this logic as it was the previous troubleshooting path for 401s,
-// in case you wish to re-enable it. If you removed it for good, this block can be removed.
-if (typeof window !== 'undefined' && devKey) {
-	console.log(
-		'[lib/appwrite.ts] Applying Appwrite Development Key (client-side only).'
-	)
-	try {
-		client.setKey(devKey)
-	} catch (e) {
-		console.error(
-			'[lib/appwrite.ts] Error setting Development Key client-side. This is unexpected if SDK is v11+ and this code runs in browser.',
-			e
-		)
-	}
-} else if (typeof window === 'undefined' && devKey) {
-	console.log(
-		'[lib/appwrite.ts] Development Key not applied during SSR (Node.js environment).'
-	)
-}
 
 // Create and export direct SDK service instances
 export const accountInstance = new Account(client)
@@ -101,7 +80,8 @@ export const authService = {
 		name?: string
 	): Promise<Models.User<Models.Preferences> | null> {
 		try {
-			const newUserAccount = await accountInstance.createEmailPasswordAccount(
+			// Step 1: Create the account
+			const newUserAccount = await accountInstance.create(
 				ID.unique(),
 				email,
 				password,
@@ -109,11 +89,14 @@ export const authService = {
 			)
 
 			if (newUserAccount) {
+				// Step 2: Create a session for the newly created user
+				await accountInstance.createEmailPasswordSession(email, password)
+
+				// Step 3: Return the user details
 				return await this.getCurrentUser()
 			}
 			return null
 		} catch (error) {
-			console.log(typeof accountInstance.createEmailPasswordSession)
 			console.error('Appwrite service :: createAccount :: error', error)
 			throw error
 		}
@@ -181,16 +164,10 @@ export const authService = {
 	async resetPassword(
 		userId: string,
 		secret: string,
-		password: string,
-		passwordAgain: string
+		password: string
 	): Promise<Models.Token> {
 		try {
-			return await accountInstance.updateRecovery(
-				userId,
-				secret,
-				password,
-				passwordAgain
-			)
+			return await accountInstance.updateRecovery(userId, secret, password)
 		} catch (error) {
 			console.error('Appwrite service :: resetPassword :: error', error)
 			throw error
@@ -245,7 +222,8 @@ export const databaseService = {
 	},
 	async getDocument<T extends Models.Document>(
 		collectionId: string,
-		documentId: string
+		documentId: string,
+		suppressNotFoundLogging = false
 	): Promise<T> {
 		try {
 			return await databasesInstance.getDocument<T>(
@@ -253,12 +231,68 @@ export const databaseService = {
 				collectionId,
 				documentId
 			)
+		} catch (error: any) {
+			// Don't log 404 errors if suppressNotFoundLogging is true
+			// This prevents console spam for expected "document not found" cases
+			const shouldLog = !(
+				suppressNotFoundLogging &&
+				(error.code === 404 || error.type === 'document_not_found')
+			)
+
+			if (shouldLog) {
+				console.error(
+					`Appwrite service :: getDocument :: error for ${collectionId}/${documentId}`,
+					error
+				)
+			}
+			throw error
+		}
+	},
+
+	// Helper method to check if a document exists without causing 404 console errors
+	async documentExists(
+		collectionId: string,
+		documentId: string
+	): Promise<boolean> {
+		try {
+			// Use listDocuments with a filter to check if the document exists
+			// This approach avoids the 404 console error from getDocument
+			const result = await databasesInstance.listDocuments(
+				APPWRITE_DATABASE_ID,
+				collectionId,
+				[Query.equal('$id', documentId), Query.limit(1)]
+			)
+			return result.documents.length > 0
 		} catch (error) {
+			// If we can't check, assume it doesn't exist
+			return false
+		}
+	},
+
+	// Enhanced getDocument that checks existence first to avoid 404 console errors
+	async getDocumentSafely<T extends Models.Document>(
+		collectionId: string,
+		documentId: string
+	): Promise<T | null> {
+		try {
+			// First check if the document exists to avoid 404 console spam
+			const exists = await this.documentExists(collectionId, documentId)
+			if (!exists) {
+				return null
+			}
+
+			// Document exists, safe to fetch it
+			return await databasesInstance.getDocument<T>(
+				APPWRITE_DATABASE_ID,
+				collectionId,
+				documentId
+			)
+		} catch (error: any) {
 			console.error(
-				`Appwrite service :: getDocument :: error for ${collectionId}/${documentId}`,
+				`Appwrite service :: getDocumentSafely :: error for ${collectionId}/${documentId}`,
 				error
 			)
-			throw error
+			return null
 		}
 	},
 	async listDocuments<T extends Models.Document>(

@@ -52,7 +52,7 @@ type ProfileContextType = {
 const defaultProfile: LocalProfileType = {
 	name: 'New User', // Required field with default
 	title: '', // Optional field
-	company: 'Unknown', // Required field with default
+	company: 'Company Name', // Required field with default
 	email: '', // Required field (will be populated from user)
 	phone: '', // Optional field
 	socials: {}, // Optional field (stored as JSON string)
@@ -73,6 +73,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 	// Track if we're currently loading to prevent duplicate requests
 	const loadingRef = useRef(false)
 	const mountedRef = useRef(true)
+
+	// Track profile creation attempts globally to prevent race conditions
+	const creationAttemptsRef = useRef<Set<string>>(new Set())
 
 	const appwriteUserId = user?.$id
 
@@ -170,11 +173,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		// We'll load everything fresh from the database and set state only once
 
 		try {
-			// Fetch document using the PROFILES_COLLECTION_ID from env
-			const appwriteDoc = await databases.getDocument<AppwriteProfile>(
+			// Use getDocumentSafely to avoid 404 console errors for new users
+			const appwriteDoc = await databases.getDocumentSafely<AppwriteProfile>(
 				PROFILES_COLLECTION_ID, // Correct collection ID from env/appwrite.ts
 				appwriteUserId // Document ID is the user's Appwrite Auth ID
 			)
+
+			// If document doesn't exist, appwriteDoc will be null
+			if (!appwriteDoc) {
+				// Simulate the same behavior as a 404 error
+				throw { code: 404, type: 'document_not_found' }
+			}
 			const loadedProfile: LocalProfileType = {
 				name: appwriteDoc.name || user?.name || '',
 				email: appwriteDoc.email || user?.email || '',
@@ -282,6 +291,71 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
 				// Create the profile in the database when it doesn't exist
 				try {
+					// Check if we're already attempting to create this profile
+					const creationKey = `create_${appwriteUserId}`
+					if (creationAttemptsRef.current.has(creationKey)) {
+						console.log(
+							'Profile creation already in progress for this user, waiting...'
+						)
+
+						// Wait for existing creation attempt to complete
+						let attempts = 0
+						const maxAttempts = 50 // 5 seconds max wait
+						while (
+							creationAttemptsRef.current.has(creationKey) &&
+							attempts < maxAttempts
+						) {
+							await new Promise((resolve) => setTimeout(resolve, 100))
+							attempts++
+						}
+
+						// Try to fetch the profile again after waiting
+						try {
+							const retryDoc =
+								await databases.getDocumentSafely<AppwriteProfile>(
+									PROFILES_COLLECTION_ID,
+									appwriteUserId
+								)
+
+							if (!retryDoc) {
+								throw { code: 404, type: 'document_not_found' }
+							}
+							const retryProfile: LocalProfileType = {
+								name: retryDoc.name || user?.name || '',
+								email: retryDoc.email || user?.email || '',
+								title: retryDoc.title || '',
+								company: retryDoc.company || '',
+								phone: retryDoc.phone || '',
+								socials:
+									typeof retryDoc.socials === 'string'
+										? JSON.parse(retryDoc.socials)
+										: retryDoc.socials || {},
+								profilePictureId: retryDoc.profilePictureId,
+								profilePicture: undefined,
+							}
+
+							setProfile(retryProfile)
+							localStorage.setItem(
+								savedProfileKey,
+								JSON.stringify({
+									...retryProfile,
+									profilePicture: undefined,
+								})
+							)
+							console.log(
+								'Successfully loaded profile created by another request'
+							)
+							return
+						} catch (retryError) {
+							console.log(
+								'Profile still not found after waiting, proceeding with creation'
+							)
+						}
+					}
+
+					// Mark that we're attempting to create this profile
+					creationAttemptsRef.current.add(creationKey)
+
 					// Ensure required fields have values according to DB schema
 					const payload: Omit<AppwriteProfile, keyof Models.Document> = {
 						name: initialProfile.name ?? user?.name ?? 'New User', // Required
@@ -304,13 +378,69 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 							Permission.delete(Role.user(appwriteUserId!)),
 						]
 					)
-					console.log('Appwrite: Created default profile for user in database.')
+					console.log('Created default profile for user in database.')
+
+					// Remove the creation attempt marker
+					creationAttemptsRef.current.delete(creationKey)
 				} catch (createError: any) {
-					console.error(
-						'Appwrite: Failed to create initial profile',
-						createError
-					)
-					setError('Failed to initialize profile in database.')
+					// Remove the creation attempt marker on error
+					const creationKey = `create_${appwriteUserId}`
+					creationAttemptsRef.current.delete(creationKey)
+
+					const createAppwriteError = createError as AppwriteException
+					if (
+						createAppwriteError.code === 409 ||
+						createAppwriteError.type === 'document_already_exists'
+					) {
+						console.log(
+							'Profile document already exists (created by another request), retrying fetch...'
+						)
+
+						// Try to fetch the profile that was created by the other request
+						try {
+							const existingDoc =
+								await databases.getDocumentSafely<AppwriteProfile>(
+									PROFILES_COLLECTION_ID,
+									appwriteUserId
+								)
+
+							if (!existingDoc) {
+								throw { code: 404, type: 'document_not_found' }
+							}
+							const existingProfile: LocalProfileType = {
+								name: existingDoc.name || user?.name || '',
+								email: existingDoc.email || user?.email || '',
+								title: existingDoc.title || '',
+								company: existingDoc.company || '',
+								phone: existingDoc.phone || '',
+								socials:
+									typeof existingDoc.socials === 'string'
+										? JSON.parse(existingDoc.socials)
+										: existingDoc.socials || {},
+								profilePictureId: existingDoc.profilePictureId,
+								profilePicture: undefined,
+							}
+
+							setProfile(existingProfile)
+							localStorage.setItem(
+								savedProfileKey,
+								JSON.stringify({
+									...existingProfile,
+									profilePicture: undefined,
+								})
+							)
+							console.log('Successfully loaded existing profile document')
+						} catch (fetchExistingError) {
+							console.error(
+								'Failed to fetch existing profile after creation conflict:',
+								fetchExistingError
+							)
+							setError('Failed to load existing profile from database.')
+						}
+					} else {
+						console.error('Failed to create initial profile:', createError)
+						setError('Failed to initialize profile in database.')
+					}
 				}
 			} else {
 				console.error('Appwrite: Failed to fetch profile', appwriteError)
@@ -329,6 +459,11 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		return () => {
 			mountedRef.current = false
 			loadingRef.current = false
+			// Clear any creation attempts for this user when component unmounts
+			if (appwriteUserId) {
+				const creationKey = `create_${appwriteUserId}`
+				creationAttemptsRef.current.delete(creationKey)
+			}
 		}
 	}, [loadProfile])
 
@@ -424,8 +559,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
 		// Get the existing document from Appwrite first to see what fields it actually has
 		try {
-			// Try to get the document to see if it exists and what fields it has
-			await databases.getDocument<AppwriteProfile>(
+			// Use getDocumentSafely to avoid 404 console errors
+			await databases.getDocumentSafely<AppwriteProfile>(
 				PROFILES_COLLECTION_ID,
 				appwriteUserId
 			)
@@ -578,11 +713,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 		let profilePicId: string | undefined
 
 		try {
-			// Fetch the latest profile from the database
-			const dbProfile = await databases.getDocument<AppwriteProfile>(
+			// Use getDocumentSafely to avoid 404 console errors
+			const dbProfile = await databases.getDocumentSafely<AppwriteProfile>(
 				PROFILES_COLLECTION_ID,
 				appwriteUserId
 			)
+
+			if (!dbProfile) {
+				console.log('No profile found in database during refresh')
+				return
+			}
 
 			profilePicId = dbProfile.profilePictureId || undefined
 			console.log('ProfilePictureId from database:', profilePicId)
